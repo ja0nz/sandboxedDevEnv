@@ -5,44 +5,58 @@
 # Features:
 # - Mostly isolated environment with selective host mounts
 # - Preserves dev directories when inside certain paths
-# - Supports graphical/X11 apps (Foot, Neovim GUI)
 #
 # Caveats:
 # - Grants access to /etc and /nix (needed for Nix)
 # - Access to nix-daemon socket is required
-# - Exposes X11 display
 
 set -euo pipefail
 
 # -----------------------------------------------------------------------------
-# CONFIGURATION
+# DETERMINE EXTRA BINDINGS BASED ON DIRENV
 # -----------------------------------------------------------------------------
-DEV_HOME="$HOME/.dev-home"
-
-# Directories where sandbox mirrors current working directory
-DEV_PATHS=(
-  "$HOME/build"
-  "$HOME/projekte/programming"
-)
-
-# -----------------------------------------------------------------------------
-# DETERMINE EXTRA BINDINGS
-# -----------------------------------------------------------------------------
+# This block handles project-specific .config overlays when running inside
+# a directory allowed by direnv. It ensures:
+#   1. The project .config exists.
+#   2. Global configs (foot, fish, helix) are synced into the project .config.
+#   3. The project .config is bind-mounted into the sandbox home.
 extra=()
-for path in "${DEV_PATHS[@]}"; do
-  if [[ "$PWD" == "$path"* ]]; then
-    extra+=(--bind "$PWD" "$PWD" --chdir "$PWD")
-    break
-  fi
-done
+
+# List of global configs to sync and mount read-only
+GLOBAL_CONFIGS=(foot fish helix)
+
+if command -v direnv >/dev/null 2>&1; then
+    if [[ $(direnv status | grep "Loaded RC allowed" | awk '{print $4}') -eq 0 ]]; then
+        # Bind current directory and set working directory
+        extra+=(--bind "$PWD" "$PWD" --chdir "$PWD")
+
+        # Ensure project .config / .local exists
+        [[ -d "$PWD/.config" ]] || mkdir -p "$PWD/.config"
+        [[ -d "$PWD/.local" ]] || mkdir -p "$PWD/.local"
+
+        # Sync global configs into project .config (only if missing)
+        for cfg in "${GLOBAL_CONFIGS[@]}"; do
+            src="$HOME/.config/$cfg"
+            dst="$PWD/.config/$cfg"
+            if [[ -d "$src" && ! -e "$dst" ]]; then
+                cp -a "$src" "$dst"
+            fi
+        done
+
+        # Bind project .config / .local into sandbox home
+        extra+=(--bind "$PWD/.config" "$HOME/.config")
+        extra+=(--bind "$PWD/.local" "$HOME/.local")
+    fi
+fi
 
 # -----------------------------------------------------------------------------
 # DETERMINE COMMAND
 # -----------------------------------------------------------------------------
+# Default to 'fish' if no command is supplied
 if [[ $# -gt 0 ]]; then
-  cmd=( "$@" )
+    cmd=( "$@" )
 else
-  cmd=( bash )
+    cmd=( fish )
 fi
 
 # -----------------------------------------------------------------------------
@@ -51,59 +65,54 @@ fi
 
 # Base system mounts
 base_opts=(
-  --share-net
-  --proc /proc
-  --dev /dev
-  --tmpfs /tmp
-  --tmpfs /run/user/1000
+    --share-net
+    --proc /proc
+    --dev /dev
+    --tmpfs /tmp
+    --tmpfs /run/user/1000
 )
 
 # Graphics support for GLX apps (e.g., Alacritty)
 graphics_opts=(
-  --dev-bind /dev/dri /dev/dri
-  --ro-bind /sys/dev/char /sys/dev/char
-  --ro-bind /sys/devices/pci0000:00 /sys/devices/pci0000:00
-  --ro-bind /run/opengl-driver /run/opengl-driver
+    --dev-bind /dev/dri /dev/dri
+    --ro-bind /run/opengl-driver /run/opengl-driver
 )
 
 # System binaries + Nix
 system_opts=(
-  --ro-bind /bin /bin
-  --ro-bind /usr /usr
-  --ro-bind /run/current-system /run/current-system
-  --ro-bind /nix /nix
-  --ro-bind /etc /etc
-  --ro-bind /run/systemd/resolve/stub-resolv.conf /run/systemd/resolve/stub-resolv.conf
+    --ro-bind /bin /bin
+    --ro-bind /usr /usr
+    --ro-bind /run/current-system /run/current-system
+    --ro-bind /nix /nix
+    --ro-bind /etc /etc
+    --ro-bind /run/systemd/resolve/stub-resolv.conf /run/systemd/resolve/stub-resolv.conf
 )
 
 # User environment
 user_opts=(
-  --bind "$DEV_HOME" "$HOME"
-  --ro-bind ~/.config/foot ~/.config/foot
-  --ro-bind ~/.config/nvim ~/.config/nvim
-  --ro-bind ~/.local/share/nvim ~/.local/share/nvim
-  # --ro-bind ~/.bin ~/.bin
+    --tmpfs "$HOME"
+    --ro-bind ~/.nix-profile ~/.nix-profile
+    --ro-bind ~/.local/share/direnv ~/.local/share/direnv
+    --ro-bind ~/bin ~/bin
 )
 
-# X11 access
-x11_opts=(
-  --bind /tmp/.X11-unix/X0 /tmp/.X11-unix/X0
-  --bind ~/.Xauthority ~/.Xauthority
-  --setenv DISPLAY :0
-)
+# Mount global configs read-only in home
+for cfg in "${GLOBAL_CONFIGS[@]}"; do
+    src="$HOME/.config/$cfg"
+    dst="$HOME/.config/$cfg"
+    [[ -d "$src" ]] && user_opts+=(--ro-bind "$src" "$dst")
+done
 
 # -----------------------------------------------------------------------------
 # RUN BUBBLEWRAP
 # -----------------------------------------------------------------------------
 exec bwrap \
-  --unshare-all \
-  "${base_opts[@]}" \
-  "${graphics_opts[@]}" \
-  "${system_opts[@]}" \
-  "${user_opts[@]}" \
-  "${x11_opts[@]}" \
-  --setenv container dev \
-  "${extra[@]}" \
-  -- \
-  "${cmd[@]}"
-
+    --unshare-all \
+    "${base_opts[@]}" \
+    "${graphics_opts[@]}" \
+    "${system_opts[@]}" \
+    "${user_opts[@]}" \
+    --setenv container dev \
+    "${extra[@]}" \
+    -- \
+    "${cmd[@]}"

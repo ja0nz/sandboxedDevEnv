@@ -1,7 +1,7 @@
 # WIP Bubblewrap Sandbox
 
-A lightweight **sandbox environment** for development using [Bubblewrap (bwrap)](https://github.com/containers/bubblewrap).  
-Provides isolation from the host system while still supporting Nix builds, graphical applications (X11/GLX), and your development directories.
+`sandbox.sh` is a lightweight shell script to start a **sandboxed shell or command** inside [Bubblewrap (bwrap)](https://github.com/containers/bubblewrap).  
+It is designed for development environments with selective isolation while still allowing access to essential system resources, Nix, and user configurations.
 
 I am still toying with different settings, mounts and CI integrations. Your needs may differ.
 
@@ -11,18 +11,40 @@ This script is an adaptation from [Joachim Breitner's dev script](https://www.jo
 
 ## Features
 
-- Isolated environment using `--unshare-all`.
-- Supports running graphical apps (Foot, Neovim GUI).
-- Optional project directory mirroring (`$PWD` is mounted if inside dev paths).
-- Preserves user configs: `~/.config/nvim`, `~/.config/alacritty`, `~/.bin`.
-- Works with Nix builds (`/nix` and nix-daemon socket accessible).
-- Customizable commands (default: bash shell).
+- Mostly isolated environment with selective host mounts
+- Preserves development directories when inside specific projects
+- Supports **Wayland/GLX applications** (e.g., Alacritty, Foot)
+- Integrates seamlessly with **direnv** for project-specific overrides
+- Allows mixing global and project `.config` entries
+
+---
+
+## How it Works
+
+- **Home Directory (`$HOME`)**: Temporarily isolated via `--tmpfs`, with global configs (`fish`, `foot`, `helix`) mounted read-only.
+- **Project Configs**: If inside a `direnv`-allowed directory, any `.config` in the project is synced with global configs and mounted into the sandbox.
+- **System Access**: Provides read-only access to `/nix`, `/bin`, `/usr`, `/etc` and `/run/current-system`.
+- **Graphics**: Mounts `/dev/dri` and `/run/opengl-driver` for GUI/Wayland support.
+
+---
+
+## Direnv Integration
+
+When you are in a **direnv-allowed directory**:
+
+1. The script automatically detects the allowed `.envrc`.
+2. It binds the current working directory into the sandbox.
+3. It ensures `$PWD/.config` exists and **syncs global configs** (`fish`, `foot`, `helix`) into it.
+4. The project `.config` is then mounted into the sandbox, giving you a flat `$HOME/.config` containing both global and project-specific configurations.
 
 ---
 
 ## Usage
 
-### Run a shell in the sandbox
+### Run sandbox in a directory of you choice
+
+If in a direnv directory, you will drop into a **read and write** allowed sandboxed environment
+If not in a direnv directory, you will drop in a **read only** sandboxed environment
 
 ```bash
 ./sandbox.sh
@@ -40,44 +62,29 @@ This script is an adaptation from [Joachim Breitner's dev script](https://www.jo
 
 ## Configuration
 
-- **Dev directories**: modify the `DEV_PATHS` array in the script to automatically bind `$PWD` when inside certain paths.
-- **User home**: `DEV_HOME` can be customized to point to your persistent development files.
-- **Environment variables**: DISPLAY, container, and other env variables are set automatically.
-
----
-
-## Integration with Devenv
-
-- Add the sandbox script to your `.devenv` folder.
-- Define tasks in `.devenv/tasks/` to run commands inside the sandbox:
-
-```yaml
-name: Sandbox Shell
-description: Start a shell inside the bubblewrap sandbox
-command: ./.dev/sandbox.sh
+- GLOBAL_CONFIGS:
+```bash
+GLOBAL_CONFIGS=(foot fish helix)
 ```
 
-- Optional: set as default shell in `devenv.json`:
+List of global .config directories that are synced and mounted read-only into the sandbox.
 
-```json
-{
-  "shell": "./.dev/sandbox.sh"
-}
-```
+- Command:
+Any command passed to sandbox.sh will be executed inside the sandbox.
+Defaults to fish if no command is provided.
 
 ---
 
 ## Security Notes
 
-- **Not a full security sandbox**: X11 access and Nix daemon socket are exposed.
+- **Not a full security sandbox**: Nix daemon socket are exposed.
 - Good for **trusted development workflows**.
-- For running untrusted code, consider a stricter setup with `--unshare-net`, temporary `$HOME`, and minimal binds.
+- For running untrusted code, consider a stricter setup with `--unshare-net` and minimal binds. See [Bubblewrap man pages](https://manpages.debian.org/experimental/bubblewrap/bwrap.1.en.html)
 
 ---
 
 ## Requirements
 
 - [Bubblewrap](https://github.com/containers/bubblewrap)
-- Linux with X11 (or modify for Wayland)
+- Linux
 - Nix (optional, for Nix builds)
-
